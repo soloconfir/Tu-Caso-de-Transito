@@ -1,0 +1,30 @@
+{
+  "name": "agente-tu-caso-de-transito",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soloconfir/Tu-Caso-de-Transito.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/soloconfir/Tu-Caso-de-Transito/issues"
+  },
+  "homepage": "https://github.com/soloconfir/Tu-Caso-de-Transito#readme",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "axios": "^1.16.1",
+    "dotenv": "^17.4.2",
+    "mysql2": "^3.22.3",
+    "openai": "^6.39.0",
+    "pino": "^10.3.1",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
