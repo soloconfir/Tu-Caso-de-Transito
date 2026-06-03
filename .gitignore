@@ -3,3 +3,4 @@
 .env
 .downloads/
 .session_whatsapp.sql
+.telegram.json

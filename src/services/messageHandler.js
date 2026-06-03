@@ -10,6 +10,12 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
     fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
 }
 
+function normalizarTelefono(jid) {
+    return jid
+        .replace(/@.*$/, '')
+        .replace(/\D/g, '');
+}
+
 // ⏳ Acumuladores globales en memoria para la ventana de espera (Debounce)
 const ventanasEspera = {};
 const documentosAcumulados = {};
@@ -39,7 +45,7 @@ export async function manejarMensajeEntrante(sock, msg) {
         if (isGroup || deMi) return;
 
         const remoteJid = msg.key.remoteJid;
-        const telefono = remoteJid.replace('@s.whatsapp.net', '');
+        const telefono = normalizarTelefono(remoteJid);
 
         const messageContent = msg.message;
         if (!messageContent) return;
@@ -70,13 +76,18 @@ export async function manejarMensajeEntrante(sock, msg) {
         if (tipoMensaje === 'text' && !textoUsuario) return;
 
         // ── Buscar o registrar el Lead en MySQL ───────────────────────────────
-        let [leads] = await pool.query('SELECT id, status FROM leads WHERE phone = ?', [telefono]);
+        console.log(`🔎 Buscando lead con teléfono normalizado: ${telefono}`);
+        let [leads] = await pool.query(
+            'SELECT id, status FROM leads WHERE REPLACE(REPLACE(phone, "+", ""), " ", "") = ?;',
+            [telefono]
+        );
         let leadId;
         let estadoActual;
 
         if (leads.length === 0) {
+            console.log(`➕ No existe lead previo para ${telefono}. Creando nuevo registro.`);
             const [resultado] = await pool.query(
-                'INSERT INTO leads (phone, status) VALUES (?, "filtrado")',
+                'INSERT INTO leads (phone, status) VALUES (?, \'filtrado\')',
                 [telefono]
             );
             leadId = resultado.insertId;
