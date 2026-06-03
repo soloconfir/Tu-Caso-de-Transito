@@ -4,12 +4,14 @@ CREATE TABLE IF NOT EXISTS whatsapp_sessions (
     data LONGTEXT NOT NULL
 );
 
--- 2. Tabla para los Leads (Con los 3 estados del Agente)
+-- 2. Tabla para los Leads (Con los 3 estados del Agente + Banderas de Control)
 CREATE TABLE IF NOT EXISTS leads (
     id INT AUTO_INCREMENT PRIMARY KEY,
     phone VARCHAR(30) UNIQUE NOT NULL,
     name VARCHAR(100) NULL,
     status ENUM('filtrado', 'documentacion', 'remitido') DEFAULT 'filtrado',
+    bot_active TINYINT(1) DEFAULT 1 NOT NULL COMMENT 'Controla si el bot responde (1=activo, 0=pausado)',
+    pause_reason VARCHAR(50) NULL DEFAULT NULL COMMENT 'Registra el motivo de la pausa para auditoría',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );

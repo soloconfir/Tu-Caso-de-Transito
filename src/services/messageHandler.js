@@ -1,5 +1,6 @@
 import { pool } from '../database/connection.js';
 import { procesarFiltroConIA, procesarDocumentacionConIA, transcribirAudio } from './openai.js';
+import { obtenerEstadoBotPorTelefono, pausarBotPorTelefono, reactivarBotPorTelefono } from './dbQueries.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { enviarAlertaTelegram } from './telegram.js';
 import fs from 'fs';
@@ -50,6 +51,16 @@ export async function manejarMensajeEntrante(sock, msg) {
         const messageContent = msg.message;
         if (!messageContent) return;
 
+        // ╔════════════════════════════════════════════════════════════════╗
+        // ║ 🚩 FILTRO DE PAUSA: Si el bot está pausado para este lead     ║
+        // ║    ignorar el mensaje silenciosamente (control humano activo)  ║
+        // ╚════════════════════════════════════════════════════════════════╝
+        const estadoBot = await obtenerEstadoBotPorTelefono(telefono);
+        if (estadoBot.encontrado && !estadoBot.botActivo) {
+            console.log(`🔇 [${telefono}] Bot pausado. Motivo: ${estadoBot.pauseReason}. Mensaje ignorado.`);
+            return;
+        }
+
         let tipoMensaje = 'text';
         let textoUsuario = messageContent.conversation || messageContent.extendedTextMessage?.text;
         let mediaMessage = null;
@@ -74,6 +85,25 @@ export async function manejarMensajeEntrante(sock, msg) {
         }
 
         if (tipoMensaje === 'text' && !textoUsuario) return;
+
+        // ╔════════════════════════════════════════════════════════════════╗
+        // ║ 🎛️  COMANDOS DE CONTROL: Asesor cambia estado del bot        ║
+        // ║    .humano  → Pausar bot, asesor toma control                  ║
+        // ║    .bot     → Reactivar bot                                    ║
+        // ╚════════════════════════════════════════════════════════════════╝
+        if (tipoMensaje === 'text' && textoUsuario?.toLowerCase() === '.humano') {
+            await pausarBotPorTelefono(telefono, 'asesor_intervino');
+            console.log(`🧑‍💼 Comando .humano detectado. Asesor tomó control para ${telefono}`);
+            return;
+        }
+
+        if (tipoMensaje === 'text' && textoUsuario?.toLowerCase() === '.bot') {
+            await reactivarBotPorTelefono(telefono);
+            console.log(`🤖 Comando .bot detectado. Bot reactivado para ${telefono}`);
+            // Enviar confirmación al asesor
+            await enviarConEfectoHumano(sock, remoteJid, "✅ Bot reactivado. Vuelvo a responder automáticamente.");
+            return;
+        }
 
         // ── Buscar o registrar el Lead en MySQL ───────────────────────────────
         console.log(`🔎 Buscando lead con teléfono normalizado: ${telefono}`);
@@ -251,67 +281,53 @@ ${testimonioCompleto}
         // ── ESTADO: documentacion ─────────────────────────────────────────────
         } else if (estadoActual === 'documentacion') {
 
-            // ── Archivos: flujo de debounce ───────────────────────────────────
+            // ╔════════════════════════════════════════════════════════════════╗
+            // ║ 🚩 AUTO-PAUSA: Si se reciben documentos, pausar el bot        ║
+            // ║    Un asesor debe revisar manualmente los archivos enviados   ║
+            // ╚════════════════════════════════════════════════════════════════╝
             if (tipoMensaje === 'image' || tipoMensaje === 'document') {
-                console.log(`📄 Archivo recibido en fase documental para Lead ID ${leadId}. Agrupando...`);
+                console.log(`📄 Archivo recibido en fase documental para Lead ID ${leadId}. Verificando auto-pausa...`);
 
-                if (!documentosAcumulados[remoteJid]) {
-                    documentosAcumulados[remoteJid] = [];
-                }
-                documentosAcumulados[remoteJid].push({
-                    tipo: tipoMensaje,
-                    texto: textoUsuario,
-                    ruta: rutaArchivoLocal
-                });
+                // Guardar el archivo en la BD antes de pausar
+                await pool.query(
+                    'INSERT INTO chat_history (lead_id, sender, message_type, message, file_path) VALUES (?, "user", ?, ?, ?)',
+                    [leadId, tipoMensaje, textoUsuario, rutaArchivoLocal]
+                );
 
-                if (ventanasEspera[remoteJid]) clearTimeout(ventanasEspera[remoteJid]);
+                // Pausar automáticamente el bot
+                await pausarBotPorTelefono(telefono, 'documento_recibido');
+                console.log(`⏸️  Auto-pausa activada. Lead ID ${leadId} requiere revisión manual de documentos.`);
 
-                ventanasEspera[remoteJid] = setTimeout(async () => {
-                    try {
-                        const paqueteDocs = documentosAcumulados[remoteJid] || [];
-                        const cantidadDocs = paqueteDocs.length;
+                // Enviar mensaje de confirmación cordial
+                const mensajePausa = "¡Perfecto! He recibido tus documentos y los estoy indexando en tu expediente. Un asesor revisará toda la información y se pondrá en contacto contigo en breve para validar tu caso. Gracias por tu paciencia.";
+                await enviarConEfectoHumano(sock, remoteJid, mensajePausa);
+                await pool.query(
+                    'INSERT INTO chat_history (lead_id, sender, message_type, message) VALUES (?, "bot", "text", ?)',
+                    [leadId, mensajePausa]
+                );
 
-                        delete documentosAcumulados[remoteJid];
-                        delete ventanasEspera[remoteJid];
-
-                        console.log(`📦 Ventana cerrada. Procesando paquete de ${cantidadDocs} documentos.`);
-
-                        const listaDetalladaDocs = paqueteDocs
-                            .map((doc, index) =>
-                                `• <b>Archivo ${index + 1}:</b> [${doc.tipo}] - <i>"${doc.texto}"</i>`
-                            ).join('\n');
-
-                        const alertaExpediente = `
-📂 <b>EXPEDIENTE DE DOCUMENTOS RECIBIDO</b> 📂
+                // Alerta Telegram para que el equipo revise los documentos
+                const alertaDocumentos = `
+📂 <b>DOCUMENTOS RECIBIDOS — PAUSA AUTOMÁTICA ACTIVADA</b> 📂
 --------------------------------------------------
 👤 <b>Lead ID:</b> ${leadId}
 📱 <b>Teléfono:</b> +${telefono}
-📊 <b>Archivos indexados:</b> ${cantidadDocs}
+📊 <b>Tipo de archivo:</b> ${tipoMensaje}
+📄 <b>Nombre:</b> ${textoUsuario}
 
-📋 <b>Material recopilado:</b>
-${listaDetalladaDocs}
+✋ <b>Estado:</b> Bot pausado automáticamente. Requiere revisión manual.
+🔗 <b>Ruta del archivo:</b> downloads/lead_${leadId}_*
 
-⚖️ <b>Siguiente acción:</b> Archivos en <code>downloads/</code>. El equipo jurídico puede iniciar revisión.
+📋 <b>Acción requerida:</b> Equipo legal debe revisar y validar los documentos.
 --------------------------------------------------`;
 
-                        enviarAlertaTelegram(alertaExpediente).catch(err =>
-                            console.error('⚠️ Falló envío a Telegram (expediente):', err)
-                        );
+                enviarAlertaTelegram(alertaDocumentos).catch(err =>
+                    console.error('⚠️ Falló envío a Telegram (documentos recibidos):', err)
+                );
 
-                        const respuestaRecibido = cantidadDocs > 1
-                            ? `¡Recibidos perfectamente! Acabo de indexar estos ${cantidadDocs} documentos en tu expediente digital. Si tienes más papeles pendientes (como el croquis o la historia clínica), síguelos enviando por aquí. Una vez tengamos todo completo, nuestro equipo legal iniciará la validación a fondo.`
-                            : `¡Recibido perfectamente! Acabo de indexar este documento en tu expediente digital. Si tienes más papeles pendientes (como el croquis o la historia clínica), síguelos enviando por aquí. Una vez tengamos todo completo, nuestro equipo legal iniciará la validación a fondo.`;
+                return; // 🛑 Cortamos la ejecución, no procesar más
 
-                        await enviarConEfectoHumano(sock, remoteJid, respuestaRecibido);
-                        await pool.query(
-                            'INSERT INTO chat_history (lead_id, sender, message_type, message) VALUES (?, "bot", "text", ?)',
-                            [leadId, respuestaRecibido]
-                        );
-
-                    } catch (timeoutError) {
-                        console.error('❌ Error procesando cola de archivos agrupados:', timeoutError);
-                    }
-                }, 5000);
+            }
 
             // ── Texto en fase documentación: agente Q&A ───────────────────────
             } else if (tipoMensaje === 'text') {

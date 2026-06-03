@@ -90,3 +90,85 @@ export async function obtenerMetricasPipeline() {
         throw error;
     }
 }
+
+/**
+ * 🚩 4. OBTENER ESTADO DEL BOT PARA UN LEAD
+ * Consulta si el bot está activo (bot_active) y el motivo de pausa si está inactivo.
+ * Retorna: { botActivo: boolean, pauseReason: string|null, estado: string, leadId: int }
+ */
+export async function obtenerEstadoBotPorTelefono(telefono) {
+    try {
+        const query = `
+            SELECT id, bot_active, pause_reason, status 
+            FROM leads 
+            WHERE REPLACE(REPLACE(phone, "+", ""), " ", "") = ?
+        `;
+        const [filas] = await pool.query(query, [telefono]);
+        
+        if (filas.length === 0) {
+            return { encontrado: false, mensaje: `No se encontró lead con teléfono ${telefono}` };
+        }
+        
+        const lead = filas[0];
+        return {
+            encontrado: true,
+            leadId: lead.id,
+            botActivo: lead.bot_active === 1,
+            pauseReason: lead.pause_reason,
+            estado: lead.status
+        };
+    } catch (error) {
+        console.error(`❌ Error consultando estado del bot para ${telefono}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * ⏸️ 5. PAUSAR BOT PARA UN LEAD
+ * Actualiza bot_active = 0 y registra el motivo de la pausa.
+ */
+export async function pausarBotPorTelefono(telefono, pauseReason = 'pausa_manual') {
+    try {
+        const query = `
+            UPDATE leads 
+            SET bot_active = 0, pause_reason = ?, updated_at = NOW() 
+            WHERE REPLACE(REPLACE(phone, "+", ""), " ", "") = ?
+        `;
+        const [resultado] = await pool.query(query, [pauseReason, telefono]);
+        
+        if (resultado.affectedRows === 0) {
+            return { exito: false, mensaje: `No se encontró lead con teléfono ${telefono}` };
+        }
+        
+        console.log(`⏸️  Bot pausado para ${telefono}. Motivo: ${pauseReason}`);
+        return { exito: true, telefono, pauseReason };
+    } catch (error) {
+        console.error(`❌ Error al pausar el bot para ${telefono}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * ▶️ 6. REACTIVAR BOT PARA UN LEAD
+ * Actualiza bot_active = 1 y limpia pause_reason.
+ */
+export async function reactivarBotPorTelefono(telefono) {
+    try {
+        const query = `
+            UPDATE leads 
+            SET bot_active = 1, pause_reason = NULL, updated_at = NOW() 
+            WHERE REPLACE(REPLACE(phone, "+", ""), " ", "") = ?
+        `;
+        const [resultado] = await pool.query(query, [telefono]);
+        
+        if (resultado.affectedRows === 0) {
+            return { exito: false, mensaje: `No se encontró lead con teléfono ${telefono}` };
+        }
+        
+        console.log(`▶️  Bot reactivado para ${telefono}`);
+        return { exito: true, telefono };
+    } catch (error) {
+        console.error(`❌ Error al reactivar el bot para ${telefono}:`, error);
+        throw error;
+    }
+}
