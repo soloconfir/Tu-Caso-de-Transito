@@ -397,3 +397,133 @@ Ejemplos que activan el handoff:
         };
     }
 }
+
+// ── Análisis Multimodal: Procesa imágenes y PDFs con OpenAI ─────────────────
+/**
+ * Analiza documentos (imágenes o PDFs) usando Vision API de OpenAI
+ * Retorna JSON estructurado con clasificación, entidades y viabilidad
+ * 
+ * @param {string} filePath - Ruta local del archivo (imagen o PDF)
+ * @param {string} mimeType - Tipo MIME del archivo ('image/jpeg', 'image/png', 'application/pdf')
+ * @returns {Promise<Object>} JSON con campos: tipo_documento, entidades_clave, resumen_ejecutivo, caso_viable
+ */
+export async function analizarDocumentoMultimodal(filePath, mimeType) {
+    try {
+        console.log(`📋 Iniciando análisis multimodal para: ${filePath} (${mimeType})`);
+        
+        let contenidoBase64 = '';
+        let contenidoTexto = '';
+
+        // ── RAMA 1: Procesar imagen (JPEG/PNG) ────────────────────────────────
+        if (mimeType === 'image/jpeg' || mimeType === 'image/png') {
+            console.log(`🖼️  Detectado archivo de imagen. Convirtiendo a Base64...`);
+            const buffer = fs.readFileSync(filePath);
+            contenidoBase64 = buffer.toString('base64');
+        }
+        
+        // ── RAMA 2: Procesar PDF ──────────────────────────────────────────────
+        else if (mimeType === 'application/pdf') {
+            console.log(`📄 Detectado PDF. Extrayendo texto...`);
+            try {
+                const PdfParse = (await import('pdf-parse')).default;
+                const buffer = fs.readFileSync(filePath);
+                const dataPdf = await PdfParse(buffer);
+                contenidoTexto = dataPdf.text;
+                
+                if (!contenidoTexto || contenidoTexto.trim().length === 0) {
+                    console.warn('⚠️  PDF escaneado sin texto legible detectado. Usando OCR fallaría.');
+                }
+            } catch (pdfError) {
+                console.error('❌ Error extrayendo PDF:', pdfError);
+                throw new Error('No se pudo procesar el archivo PDF. Intenta con una imagen clara.');
+            }
+        }
+        
+        else {
+            throw new Error(`Formato no soportado: ${mimeType}. Use JPEG, PNG o PDF.`);
+        }
+
+        // ── ARMAR PAYLOAD PARA OpenAI ─────────────────────────────────────────
+        const systemPrompt = `
+Eres un especialista forense en análisis de documentos de accidentes de tránsito para casos de indemnización en Colombia.
+
+Tu tarea es clasificar y extraer información CRÍTICA del documento recibido. Responde ÚNICAMENTE en formato JSON estricto con los siguientes campos:
+
+{
+  "tipo_documento": "string (Croquis|Cédula|Historia Clínica|Fotos del Accidente|Desconocido)",
+  "entidades_clave": {
+    "implicados": ["string"],
+    "placas": ["string"],
+    "aseguradoras": ["string"],
+    "fechas": ["string"],
+    "lugares": ["string"]
+  },
+  "resumen_ejecutivo": "string (máximo 3 líneas con hallazgos críticos)",
+  "caso_viable": "boolean (true si el documento aporta valor, false si invalida la reclamación)"
+}
+
+Reglas de clasificación:
+- Croquis: Diagramas oficiales del accidente con posiciones de vehículos, señales.
+- Cédula: Documento de identidad con nombre, número y foto.
+- Historia Clínica: Reportes médicos, epicrisis, diagnósticos de lesiones.
+- Fotos del Accidente: Imágenes de daños vehiculares, lugar del hecho.
+- Desconocido: Cualquier otro tipo de documento.
+
+Reglas de viabilidad:
+- Si es Croquis o Historia Clínica: caso_viable = true (documentos críticos).
+- Si es Cédula: caso_viable = true (necesario para expediente).
+- Si es Fotos: caso_viable = true (evidencia visual).
+- Si es un documento que NO aporta a la reclamación (recibo, contrato no relacionado): caso_viable = false.
+- Extrae TODOS los nombres, placas, aseguradoras y fechas visibles.`;
+
+        const userContent = [];
+
+        if (contenidoBase64) {
+            // Enviar imagen en Base64
+            userContent.push({
+                type: "image_url",
+                image_url: {
+                    url: `data:${mimeType};base64,${contenidoBase64}`,
+                    detail: "high"
+                }
+            });
+            userContent.push({
+                type: "text",
+                text: "Analiza este documento y extrae la información en el formato JSON especificado."
+            });
+        } else if (contenidoTexto) {
+            // Enviar texto extraído de PDF
+            userContent.push({
+                type: "text",
+                text: `Aquí está el contenido extraído de un PDF. Analízalo y responde en JSON:\n\n${contenidoTexto}\n\nRespuesta en JSON:`
+            });
+        }
+
+        const response = await openai.chat.completions.create({
+            model: "gpt-4o",
+            messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userContent }
+            ],
+            response_format: { type: "json_object" },
+            temperature: 0.2,
+            max_tokens: 1000
+        });
+
+        const resultadoIA = JSON.parse(response.choices[0].message.content);
+        
+        console.log(`✅ Análisis completado. Tipo: ${resultadoIA.tipo_documento}, Viable: ${resultadoIA.caso_viable}`);
+
+        return {
+            tipo_documento: resultadoIA.tipo_documento || 'Desconocido',
+            entidades_clave: resultadoIA.entidades_clave || {},
+            resumen_ejecutivo: resultadoIA.resumen_ejecutivo || 'Sin información disponible',
+            caso_viable: resultadoIA.caso_viable ?? true,
+            timestamp: new Date().toISOString()
+        };
+
+    } catch (error) {
+        console.error('❌ Error en analizarDocumentoMultimodal:', error);
+        throw error;
+    }
+}

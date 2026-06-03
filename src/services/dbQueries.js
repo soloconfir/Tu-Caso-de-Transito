@@ -172,3 +172,76 @@ export async function reactivarBotPorTelefono(telefono) {
         throw error;
     }
 }
+
+/**
+ * 📄 7. GUARDAR DOCUMENTO ANALIZADO EN EXPEDIENTE
+ * Inserta el resultado del análisis multimodal en la tabla lead_documents.
+ * 
+ * @param {number} leadId - ID del lead
+ * @param {string} fileName - Ruta física del archivo guardado
+ * @param {string} documentType - Tipo clasificado (Croquis, Cédula, Historia Clínica, etc.)
+ * @param {Object} aiAnalysis - Objeto con los resultados del análisis de IA
+ * @returns {Promise<Object>} { exito: boolean, documentoId: int }
+ */
+export async function guardarDocumentoAnalizadoEnExpediente(leadId, fileName, documentType, aiAnalysis) {
+    try {
+        // Crear un JSON limpio para guardar en la BD
+        const resumenAI = JSON.stringify({
+            tipo_documento: aiAnalysis.tipo_documento,
+            entidades_clave: aiAnalysis.entidades_clave,
+            resumen_ejecutivo: aiAnalysis.resumen_ejecutivo,
+            caso_viable: aiAnalysis.caso_viable,
+            analizado_en: aiAnalysis.timestamp
+        });
+
+        const query = `
+            INSERT INTO lead_documents (lead_id, file_name, document_type, ai_summary)
+            VALUES (?, ?, ?, ?)
+        `;
+        const [resultado] = await pool.query(query, [leadId, fileName, documentType, resumenAI]);
+
+        console.log(`✅ Documento indexado en BD. Lead ID: ${leadId}, Documento ID: ${resultado.insertId}`);
+        
+        return { 
+            exito: true, 
+            documentoId: resultado.insertId,
+            leadId,
+            tipo: documentType
+        };
+
+    } catch (error) {
+        console.error(`❌ Error guardando documento en BD (Lead ID ${leadId}):`, error);
+        throw error;
+    }
+}
+
+/**
+ * 📊 8. OBTENER DOCUMENTOS INDEXADOS DE UN LEAD
+ * Retorna todos los documentos analizados para un lead específico.
+ */
+export async function obtenerDocumentosDelLead(leadId) {
+    try {
+        const query = `
+            SELECT id, file_name, document_type, ai_summary, created_at
+            FROM lead_documents
+            WHERE lead_id = ?
+            ORDER BY created_at DESC
+        `;
+        const [docs] = await pool.query(query, [leadId]);
+        
+        return {
+            encontrado: docs.length > 0,
+            total: docs.length,
+            documentos: docs.map(doc => ({
+                id: doc.id,
+                archivo: doc.file_name,
+                tipo: doc.document_type,
+                resumen: doc.ai_summary ? JSON.parse(doc.ai_summary) : null,
+                cargadoEn: doc.created_at
+            }))
+        };
+    } catch (error) {
+        console.error(`❌ Error obteniendo documentos del lead ${leadId}:`, error);
+        throw error;
+    }
+}

@@ -1,6 +1,6 @@
 import { pool } from '../database/connection.js';
-import { procesarFiltroConIA, procesarDocumentacionConIA, transcribirAudio } from './openai.js';
-import { obtenerEstadoBotPorTelefono, pausarBotPorTelefono, reactivarBotPorTelefono } from './dbQueries.js';
+import { procesarFiltroConIA, procesarDocumentacionConIA, transcribirAudio, analizarDocumentoMultimodal } from './openai.js';
+import { obtenerEstadoBotPorTelefono, pausarBotPorTelefono, reactivarBotPorTelefono, guardarDocumentoAnalizadoEnExpediente } from './dbQueries.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { enviarAlertaTelegram } from './telegram.js';
 import fs from 'fs';
@@ -306,24 +306,86 @@ ${testimonioCompleto}
                     [leadId, mensajePausa]
                 );
 
-                // Alerta Telegram para que el equipo revise los documentos
-                const alertaDocumentos = `
-📂 <b>DOCUMENTOS RECIBIDOS — PAUSA AUTOMÁTICA ACTIVADA</b> 📂
+                // ╔════════════════════════════════════════════════════════════════╗
+                // ║ 📋 PIPELINE MULTIMODAL: Analizar documento con OpenAI        ║
+                // ║    Clasificación, extracción de entidades y viabilidad       ║
+                // ╚════════════════════════════════════════════════════════════════╝
+                try {
+                    console.log(`🧠 Iniciando análisis multimodal para Lead ID ${leadId}...`);
+                    
+                    // Determinar MIME type según extensión
+                    let mimeType = 'application/octet-stream';
+                    if (tipoMensaje === 'image') {
+                        mimeType = extensionElegida === '.jpg' ? 'image/jpeg' : 'image/png';
+                    } else if (tipoMensaje === 'document') {
+                        mimeType = 'application/pdf';
+                    }
+
+                    // Procesar documento con OpenAI
+                    const analisisMultimodal = await analizarDocumentoMultimodal(rutaArchivoLocal, mimeType);
+
+                    // Guardar los resultados en la BD
+                    const docGuardado = await guardarDocumentoAnalizadoEnExpediente(
+                        leadId,
+                        rutaArchivoLocal,
+                        analisisMultimodal.tipo_documento,
+                        analisisMultimodal
+                    );
+
+                    console.log(`✅ Documento analizado y guardado. Tipo: ${analisisMultimodal.tipo_documento}`);
+
+                    // Enviar alerta enriquecida a Telegram con análisis
+                    const alertaDocumentosAnalizado = `
+📂 <b>DOCUMENTO ANALIZADO — PAUSA AUTOMÁTICA ACTIVADA</b> 📂
 --------------------------------------------------
 👤 <b>Lead ID:</b> ${leadId}
 📱 <b>Teléfono:</b> +${telefono}
 📊 <b>Tipo de archivo:</b> ${tipoMensaje}
 📄 <b>Nombre:</b> ${textoUsuario}
 
+🤖 <b>ANÁLISIS DE IA:</b>
+🏷️ <b>Tipo de Documento:</b> <code>${analisisMultimodal.tipo_documento}</code>
+📝 <b>Resumen Ejecutivo:</b>
+<i>${analisisMultimodal.resumen_ejecutivo}</i>
+
+🔑 <b>Entidades Clave Detectadas:</b>
+${Object.entries(analisisMultimodal.entidades_clave || {})
+    .filter(([_, valores]) => valores.length > 0)
+    .map(([clave, valores]) => `• <b>${clave}:</b> ${valores.join(', ')}`)
+    .join('\n') || 'Ninguna detectada'}
+
+✅ <b>Caso Viable:</b> ${analisisMultimodal.caso_viable ? 'Sí ✓' : 'Requiere revisión jurídica'}
+
 ✋ <b>Estado:</b> Bot pausado automáticamente. Requiere revisión manual.
-🔗 <b>Ruta del archivo:</b> downloads/lead_${leadId}_*
+🔗 <b>Ruta del archivo:</b> ${rutaArchivoLocal}
 
 📋 <b>Acción requerida:</b> Equipo legal debe revisar y validar los documentos.
 --------------------------------------------------`;
 
-                enviarAlertaTelegram(alertaDocumentos).catch(err =>
-                    console.error('⚠️ Falló envío a Telegram (documentos recibidos):', err)
-                );
+                    enviarAlertaTelegram(alertaDocumentosAnalizado).catch(err =>
+                        console.error('⚠️ Falló envío a Telegram (análisis de documento):', err)
+                    );
+
+                } catch (analisiaError) {
+                    console.error('❌ Error en análisis multimodal:', analisiaError);
+                    
+                    // Alerta de error sin detener el flujo
+                    const alertaErrorAnalisis = `
+⚠️ <b>ERROR EN ANÁLISIS MULTIMODAL</b> ⚠️
+--------------------------------------------------
+👤 <b>Lead ID:</b> ${leadId}
+📱 <b>Teléfono:</b> +${telefono}
+
+❌ <b>Error:</b> ${analisiaError.message}
+
+El documento se guardó pero no pudo analizarse automáticamente.
+Equipo legal debe revisar manualmente.
+--------------------------------------------------`;
+                    
+                    enviarAlertaTelegram(alertaErrorAnalisis).catch(err =>
+                        console.error('⚠️ Falló envío a Telegram (error análisis):', err)
+                    );
+                }
 
                 return; // 🛑 Cortamos la ejecución, no procesar más
 
