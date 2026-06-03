@@ -330,7 +330,7 @@ ${testimonioCompleto}
             }
 
             // ── Texto en fase documentación: agente Q&A ───────────────────────
-            } else if (tipoMensaje === 'text') {
+            if (tipoMensaje === 'text') {
 
                 console.log(`💬 Texto en fase documentacion para Lead ID ${leadId}. Consultando agente Q&A...`);
 
