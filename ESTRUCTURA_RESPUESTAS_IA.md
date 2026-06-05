@@ -85,7 +85,6 @@ La IA debe devolver sus respuestas como un objeto JSON con dos propiedades:
 {
   "respuesta_usuario": "Perfecto. Ahora necesito que me envíes los siguientes documentos. ¿Cuál deseas enviar primero?",
   "botones": [
-    "Cédula de identidad",
     "Croquis del accidente",
     "Historia clínica / Epicrisis",
     "Otro documento"

@@ -92,7 +92,7 @@ CASO 4 - Descarte (SIN BOTONES):
 CASO 5 - Menú de opciones (CON BOTONES):
 {
   "respuesta_usuario": "¿Cuál documento deseas enviar primero?",
-  "botones": ["Cédula", "Croquis", "Historia clínica", "Otro"]
+  "botones": ["Croquis", "Historia clínica", "Otro"]
 }
 
 ---

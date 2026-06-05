@@ -345,14 +345,14 @@ ${testimonioCompleto}
 🤖 <b>DICTAMEN DE CONVERSIÓN (SOFÍA):</b>
 <i>"${resultadoIA.respuesta}"</i>
 
-🎯 <b>Estado del Bot:</b> Se le solicitó exitosamente Cédula, Croquis e Historia Clínica.
+🎯 <b>Estado del Bot:</b> Se le solicitó exitosamente Croquis e Historia Clínica.
 --------------------------------------------------`;
 
                 enviarAlertaTelegram(alertaLeadCalificado).catch(err =>
                     console.error('⚠️ Falló envío a Telegram (lead calificado):', err)
                 );
 
-                const mensajeTransicion = "Perfecto. Para proceder a evaluar formalmente la viabilidad jurídica de tu reclamación y radicarla ante la aseguradora o tránsito, por favor envíame por este medio fotos claras o archivos PDF de los siguientes documentos:\n\n1. Cédula del afectado.\n2. Croquis o informe de tránsito del accidente.\n3. Epicrisis o Historia clínica preliminar de las lesiones.";
+                const mensajeTransicion = "Perfecto. Para proceder a evaluar formalmente la viabilidad jurídica de tu reclamación y radicarla ante la aseguradora o tránsito, por favor envíame por este medio fotos claras o archivos PDF de los siguientes documentos:\n\n1. Croquis o informe de tránsito del accidente.\n2. Epicrisis o Historia clínica preliminar de las lesiones.";
                 await enviarConEfectoHumano(sock, remoteJid, mensajeTransicion);
                 await pool.query(
                     'INSERT INTO chat_history (lead_id, sender, message_type, message) VALUES (?, "bot", "text", ?)',
