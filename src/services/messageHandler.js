@@ -1,6 +1,7 @@
 import { pool } from '../database/connection.js';
 import { procesarFiltroConIA, procesarDocumentacionConIA, transcribirAudio, analizarDocumentoMultimodal } from './openai.js';
 import { obtenerEstadoBotPorTelefono, pausarBotPorTelefono, reactivarBotPorTelefono, guardarDocumentoAnalizadoEnExpediente } from './dbQueries.js';
+import { enviarMensajeConBotones } from './whatsapp.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { enviarAlertaTelegram } from './telegram.js';
 import fs from 'fs';
@@ -39,6 +40,69 @@ async function enviarConEfectoHumano(sock, remoteJid, texto) {
     }
 }
 
+/**
+ * 🔘 Procesa respuesta de IA y decide si enviar botones o texto plano
+ * 
+ * Esperado: La IA devuelve JSON con estructura:
+ * {
+ *   "respuesta_usuario": "Texto de la pregunta",
+ *   "botones": ["Opción 1", "Opción 2", "Opción 3"]
+ * }
+ * 
+ * Si botones está vacío → Envía texto plano con efecto humano
+ * Si botones tiene elementos → Envía mensaje interactivo con botones
+ */
+async function procesarRespuestaConBotones(sock, remoteJid, respuestaIA) {
+    try {
+        let respuesta_usuario = '';
+        let botones = [];
+
+        // ╔════════════════════════════════════════════════════════════════╗
+        // ║ 📦 PARSEO: Intentar extraer JSON de la respuesta de la IA     ║
+        // ║    Maneja tanto respuestas JSON como texto plano              ║
+        // ╚════════════════════════════════════════════════════════════════╝
+        if (typeof respuestaIA === 'string') {
+            try {
+                // Intentar parsear como JSON
+                const jsonParsado = JSON.parse(respuestaIA);
+                respuesta_usuario = jsonParsado.respuesta_usuario || '';
+                botones = Array.isArray(jsonParsado.botones) ? jsonParsado.botones : [];
+                console.log(`✅ Respuesta de IA parseada como JSON. Botones: ${botones.length}`);
+            } catch (parseError) {
+                // Si no es JSON válido, tratar como texto plano
+                respuesta_usuario = respuestaIA;
+                botones = [];
+                console.log(`ℹ️ Respuesta de IA no es JSON válido, enviando como texto plano.`);
+            }
+        } else if (typeof respuestaIA === 'object' && respuestaIA !== null) {
+            // Ya es un objeto parseado
+            respuesta_usuario = respuestaIA.respuesta_usuario || '';
+            botones = Array.isArray(respuestaIA.botones) ? respuestaIA.botones : [];
+        }
+
+        // ╔════════════════════════════════════════════════════════════════╗
+        // ║ 🎯 LÓGICA DE ENVÍO: Con botones o sin botones                 ║
+        // ╚════════════════════════════════════════════════════════════════╝
+        if (botones.length > 0) {
+            // ✅ Con botones interactivos
+            console.log(`🔘 Enviando respuesta con ${botones.length} botones.`);
+            await enviarMensajeConBotones(sock, remoteJid, respuesta_usuario, botones);
+        } else {
+            // ✅ Sin botones (texto plano con efecto humano)
+            console.log(`📝 Enviando respuesta como texto plano.`);
+            await enviarConEfectoHumano(sock, remoteJid, respuesta_usuario);
+        }
+
+        return { respuesta_usuario, botones };
+
+    } catch (error) {
+        console.error('❌ Error en procesarRespuestaConBotones:', error);
+        // Fallback: enviar respuesta como texto plano
+        await enviarConEfectoHumano(sock, remoteJid, typeof respuestaIA === 'string' ? respuestaIA : JSON.stringify(respuestaIA));
+        return { respuesta_usuario: typeof respuestaIA === 'string' ? respuestaIA : JSON.stringify(respuestaIA), botones: [] };
+    }
+}
+
 export async function manejarMensajeEntrante(sock, msg) {
     try {
         const isGroup = msg.key.remoteJid.endsWith('@g.us');
@@ -66,7 +130,16 @@ export async function manejarMensajeEntrante(sock, msg) {
         let mediaMessage = null;
         let extensionElegida = '';
 
-        if (messageContent.imageMessage) {
+        // ╔════════════════════════════════════════════════════════════════╗
+        // ║ 🔘 CAPTURA UNIFICADA DE BOTONES Y TEXTO                       ║
+        // ║    Extrae transparentemente clics de botones o texto libre     ║
+        // ╚════════════════════════════════════════════════════════════════╝
+        if (messageContent.buttonsResponseMessage) {
+            // Usuario presionó un botón interactivo
+            tipoMensaje = 'button_click';
+            textoUsuario = messageContent.buttonsResponseMessage.selectedButtonText || '[Botón sin texto]';
+            console.log(`🔘 Clic en botón detectado: "${textoUsuario}"`);
+        } else if (messageContent.imageMessage) {
             tipoMensaje = 'image';
             mediaMessage = messageContent.imageMessage;
             extensionElegida = '.jpg';
@@ -230,11 +303,20 @@ export async function manejarMensajeEntrante(sock, msg) {
                 );
             }
 
-            // Enviar respuesta al usuario (sea exclusión o continuación del filtro)
-            await enviarConEfectoHumano(sock, remoteJid, resultadoIA.respuesta);
+            // ╔════════════════════════════════════════════════════════════════╗
+            // ║ 🔘 ENVÍO DINÁMICO: Procesa respuesta (texto + botones)        ║
+            // ║    La IA puede devolver JSON con botones o texto plano        ║
+            // ╚════════════════════════════════════════════════════════════════╝
+            const { respuesta_usuario: respuestaFinal } = await procesarRespuestaConBotones(
+                sock,
+                remoteJid,
+                resultadoIA.respuesta
+            );
+
+            // Guardar en historial (siempre guardamos la respuesta de texto, no los botones)
             await pool.query(
                 'INSERT INTO chat_history (lead_id, sender, message_type, message) VALUES (?, "bot", "text", ?)',
-                [leadId, resultadoIA.respuesta]
+                [leadId, respuestaFinal]
             );
 
             // ── Transición a documentación ────────────────────────────────────
@@ -441,10 +523,18 @@ El bot se ha silenciado automáticamente.
                     return;
                 }
 
-                await enviarConEfectoHumano(sock, remoteJid, resultadoDoc.respuesta);
+                // ╔════════════════════════════════════════════════════════════════╗
+                // ║ 🔘 ENVÍO DINÁMICO: Respuesta de documentación con botones     ║
+                // ╚════════════════════════════════════════════════════════════════╝
+                const { respuesta_usuario: respuestaDocFinal } = await procesarRespuestaConBotones(
+                    sock,
+                    remoteJid,
+                    resultadoDoc.respuesta
+                );
+
                 await pool.query(
                     'INSERT INTO chat_history (lead_id, sender, message_type, message) VALUES (?, "bot", "text", ?)',
-                    [leadId, resultadoDoc.respuesta]
+                    [leadId, respuestaDocFinal]
                 );
             }
 
