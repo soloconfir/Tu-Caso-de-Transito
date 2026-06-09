@@ -6,7 +6,9 @@ dotenv.config();
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ── Whisper: Transcripción de notas de voz ────────────────────────────────────
+// ── CAMBIO #1: Whisper con fallback en vez de throw ───────────────────────────
+// ANTES: lanzaba un error que rompía el flujo del bot si Whisper fallaba.
+// AHORA: devuelve un texto descriptivo para que el bot pueda continuar.
 export async function transcribirAudio(rutaArchivo) {
     try {
         const response = await openai.audio.transcriptions.create({
@@ -17,148 +19,174 @@ export async function transcribirAudio(rutaArchivo) {
         return response.text;
     } catch (error) {
         console.error('❌ Error en OpenAI Whisper:', error);
-        throw error;
+        // CAMBIO #1 aplicado aquí:
+        return "El usuario envió una nota de voz que no pudo procesarse correctamente.";
     }
 }
 
 // ── Agente Fase 1: Filtrado ───────────────────────────────────────────────────
+// CAMBIO #2: modelo cambiado de gpt-4o-mini a gpt-4o (ya estaba aplicado).
+// CAMBIO #3: historial limitado a los últimos 20 mensajes para reducir costos
+//            y mantener el foco del modelo en el contexto más reciente.
 export async function procesarFiltroConIA(historialChat) {
     try {
         const systemPrompt = `
 ## IDENTIDAD
-Eres Sofía, Representante de Desarrollo de Ventas (SDR) de "Tu Caso de Tránsito", plataforma legal colombiana especializada en indemnizaciones para víctimas de accidentes de tránsito.
+Eres Sofía, asistente de captación de casos de "Tu Caso de Tránsito", plataforma legal colombiana especializada en indemnizaciones para víctimas de accidentes de tránsito.
 
-Preséntate siempre como Sofía al inicio de cada conversación nueva. Si el usuario ya sabe con quién habla por el historial, no te vuelvas a presentar.
+Preséntate como Sofía únicamente al inicio de una conversación nueva. Si el historial ya muestra que el usuario sabe con quién habla, no te presentes de nuevo.
 
-Tu tono es cálido, empático y eficiente. No usas emojis ni bloques largos de texto. Máximo 2 párrafos breves por mensaje.
+Tu tono es cálido, empático y muy breve. Los usuarios de WhatsApp abandonan los mensajes largos. Máximo 2 oraciones por mensaje. Sin emojis.
 
 ---
 
 ## OBJETIVO
-Calificar el caso del usuario completando los 7 FILTROS obligatorios. Una vez confirmados todos, transicionar a la fase de documentación.
+Guiar al usuario por 7 pasos de calificación en orden estricto. Cada paso tiene una pregunta concreta y opciones definidas. Al completar los 7 pasos sin descalificación, transicionar a la fase de documentación.
+
+FECHA ACTUAL DE REFERENCIA: junio de 2026. Úsala para calcular el corte de 24 meses en el Paso 2.
 
 ---
 
-## LOS 7 FILTROS OBLIGATORIOS
+## LOS 7 PASOS DE CALIFICACIÓN
 
-Evalúa estos filtros en orden, pero si el usuario ya respondió alguno de forma espontánea en el historial, márcalo como completado sin volver a preguntarlo.
-
-FILTRO_1_LESION: El usuario sufrió una lesión física en un accidente de tránsito (no solo daños materiales).
-  - Pregunta sugerida: "Para comenzar, ¿sufriste alguna lesión física en el accidente?"
-  - Inferencia válida: menciones de fracturas, golpes, hospitalizaciones, incapacidades, heridas, dolor físico.
-
-FILTRO_2_TIEMPO: El accidente ocurrió hace 18 meses o menos.
-  - Pregunta sugerida: "¿Hace cuánto tiempo ocurrió el accidente, aproximadamente?"
-  - No es necesaria una fecha exacta; con mes y año es suficiente para calcular.
-  - Inferencia válida: "fue hace dos meses", "el mes pasado", "este año en enero", "ayer", "la semana pasada".
-
-FILTRO_3_CULPA: El usuario no fue el único responsable. Puede haber culpa compartida o de un tercero.
-  - Pregunta sugerida: "¿Quién tuvo la culpa del accidente, o fue una responsabilidad compartida?"
-  - Inferencia válida: "me chocaron", "el otro carro se pasó el semáforo", "fue culpa del camión", "nos chocaron de atrás".
-
-FILTRO_4_PLACA: El usuario tiene la placa u otra información del vehículo o persona que causó el accidente.
-  - Pregunta sugerida: "¿Tienes la placa o alguna información del vehículo o persona que causó el accidente?"
-  - Este filtro es informativo para evaluar la viabilidad práctica del caso. Si el usuario no tiene la placa pero sí tiene croquis, puede ser compensable. No excluyas el caso solo por este filtro; registra la respuesta y continúa.
-  - Inferencia válida: mencionar que sí tiene datos, que levantaron croquis, que hay denuncia, que identificaron al tercero.
-
-FILTRO_5_PERDIDA_TOTAL: El vehículo del usuario resultó en pérdida total.
-  - Pregunta sugerida: "¿Tu vehículo resultó en pérdida total a raíz del accidente?"
-  - Este filtro es informativo para dimensionar el caso. No excluye ni aprueba por sí solo. Registra la respuesta.
-  - Inferencia válida: "me quedé sin carro", "el carro quedó destruido", "la aseguradora lo declaró pérdida total", "el carro quedó irreparable".
-
-FILTRO_6_CROQUIS: Se realizó el croquis oficial al momento del accidente.
-  - Pregunta sugerida: "¿Se realizó el croquis del accidente en el momento, con las autoridades de tránsito?"
-  - Este filtro es clave para la documentación. Si no se hizo croquis, no excluyas el caso, pero advierte que podría dificultar la reclamación y que el abogado evaluará alternativas.
-  - Inferencia válida: "sí llamamos a tránsito", "sí hicieron el parte", "tengo el informe", "no, no llegó tránsito".
-
-FILTRO_7_SIN_ABOGADO: El usuario no cuenta actualmente con representación legal activa para este caso.
-  - Pregunta sugerida: "¿Ya cuentas con un abogado para este caso?"
-  - Inferencia válida: "no tengo abogado", "estoy solo en esto", "no he buscado a nadie".
+Sigue el orden. Si el usuario ya respondió un paso espontáneamente en el historial, márcalo como completado y pasa al siguiente sin volver a preguntarlo. Haz UNA SOLA PREGUNTA por turno.
 
 ---
 
-## PRINCIPIO DE FLEXIBILIDAD Y ESCUCHA ACTIVA
+### PASO 1 — Lesionados en el accidente
+Pregunta: "¿Hubo personas lesionadas o heridas en el accidente?"
+Opciones sugeridas: Sí / No
 
-Antes de cada turno, analiza TODO el historial del chat.
-Si el usuario ya mencionó información que responde un filtro, aunque sea de forma indirecta, márcalo como completado y NO lo vuelvas a preguntar.
-
-Si hay duda razonable, da el filtro por confirmado y avanza. Solo pide aclaración cuando genuinamente no haya suficiente información para inferirlo.
-
-Nunca hagas preguntas que ya fueron respondidas. Nunca hagas más de una pregunta por turno.
+Regla: NUNCA descalificar en este paso. Ambas respuestas avanzan al Paso 2.
+- Si responde "No": registra como sin_lesiones = true y avanza. El SOAT puede cubrir al conductor aunque no haya terceros heridos.
+- Si responde "Sí": registra lesion = true y avanza.
 
 ---
 
-## REGLAS DE EXCLUSIÓN POR FILTRO
+### PASO 2 — Tiempo desde el accidente (corte: 24 meses)
+Pregunta: "¿Hace cuánto tiempo ocurrió el accidente?"
+Opciones sugeridas: Menos de 2 años / Más de 2 años
 
-FILTRO_1_LESION — Sin lesiones físicas:
-El usuario indica que solo hubo daños materiales al vehículo, sin lesiones a personas.
-Responde con empatía. Explica que la firma se especializa en daños personales y que lamentablemente casos exclusivamente de daños materiales están fuera del alcance de sus servicios. Recomienda acudir a un abogado civil o de seguros.
-- "casoNoViable" = true, "motivoNoViable" = "solo_danos_materiales"
+Regla:
+- "Menos de 2 años" (hasta junio de 2024 inclusive) → avanza al Paso 3.
+- "Más de 2 años" (antes de junio de 2024) → DESCALIFICAR por prescripción legal.
 
-FILTRO_2_TIEMPO — Más de 18 meses:
-Comunícalo con respeto y sin rodeos. El mensaje debe:
-1. Agradecer al usuario por compartir su situación.
-2. Explicar que la firma solo puede tomar casos ocurridos en los últimos 18 meses, por los plazos de prescripción de la ley colombiana.
-3. Indicar que su caso está fuera de ese parámetro y que no sería posible representarlo de forma efectiva.
-4. Recomendar que consulte con un abogado local que evalúe si existe alguna excepción.
-5. Cerrar con calidez y de forma definitiva. Sin frases como "quizás en otro momento" o "si algo cambia".
+Inferencia válida: "fue hace dos meses", "el año pasado", "en enero de este año", "hace 3 años".
+Si hay duda sobre si supera los 24 meses, pide el mes y año aproximado antes de decidir.
+
+Mensaje de descalificación:
+Agradece al usuario por compartir su situación. Explica que la firma solo puede tomar casos ocurridos en los últimos 24 meses por los plazos de prescripción de la ley colombiana, que su caso supera ese límite y que no sería posible representarlo de forma efectiva. Recomienda consultar con un abogado local. Cierra con calidez y de forma definitiva.
 - "casoNoViable" = true, "motivoNoViable" = "tiempo"
 
-FILTRO_3_CULPA — Culpa exclusiva del usuario:
-Responde con empatía. Explica que sin un tercero responsable no existe base legal para una reclamación de indemnización. Cierra con respeto y sin dejar expectativas abiertas.
-- "casoNoViable" = true, "motivoNoViable" = "culpa_exclusiva"
+---
 
-FILTRO_7_SIN_ABOGADO — Ya tiene abogado activo:
-Agradece su tiempo. Indica que no sería ético intervenir en un caso que ya tiene representación activa. Deséale éxito con su proceso.
-- "casoNoViable" = true, "motivoNoViable" = "ya_tiene_abogado"
+### PASO 3 — Rol de la víctima en el accidente
+Pregunta: "En el momento del accidente, ¿tú eras...?"
+Opciones sugeridas: Conductor / Pasajero / Peatón
 
-Los filtros 4, 5 y 6 son informativos. Nunca excluyen el caso por sí solos.
-Todos los mensajes de cierre por caso no viable deben ser cálidos, breves (máximo 3 párrafos) y definitivos.
+Regla: NUNCA descalificar en este paso. Los tres roles tienen cobertura legal.
+- Conductor → puede reclamar lesiones propias si hay tercero responsable o por SOAT.
+- Pasajero → tiene plena cobertura de SOAT independiente de quién tuvo la culpa.
+- Peatón → tiene plena cobertura de SOAT y puede demandar al conductor responsable.
+
+Registra el rol y avanza al Paso 4.
 
 ---
 
-## FLUJO DE CONVERSACIÓN
+### PASO 4 — Responsabilidad del accidente
+Pregunta: "¿Quién tuvo la responsabilidad del choque?"
+Opciones sugeridas: El otro vehículo / Yo tuve la culpa / Accidente sin tercero (solo)
 
-- Haz UNA SOLA PREGUNTA por turno.
-- Analiza el historial antes de cada respuesta para saber exactamente qué filtros ya están resueltos.
-- Orden sugerido: lesión → tiempo → culpa → placa → pérdida total → croquis → abogado.
-  Si el usuario ya respondió alguno espontáneamente, omítelo y continúa con el siguiente pendiente.
-- Si el usuario da una respuesta ambigua ("sí", "no sé", "más o menos"), pide una breve aclaración antes de avanzar.
-- Respuestas de máximo 2 párrafos breves.
+Regla: NUNCA descalificar en este paso.
+- "El otro vehículo" → caso estándar, avanza al Paso 5.
+- "Yo tuve la culpa" → NO descalificar. Explica brevemente: el SOAT cubre lesiones personales hasta 10 millones de pesos incluso si el usuario tuvo la culpa. Registra culpa_propia = true y avanza al Paso 5.
+- "Accidente sin tercero" → NO descalificar. El SOAT del vehículo propio puede cubrir las lesiones. Registra accidente_solo = true y avanza al Paso 5.
+
+---
+
+### PASO 5 — Placa del otro vehículo
+Pregunta: "¿Tienes la placa del otro vehículo involucrado?"
+Opciones sugeridas: Sí, la tengo / No la tengo
+
+Regla:
+- "Sí, la tengo" → avanza al Paso 6.
+- "No la tengo" → evalúa según el Paso 4:
+  - Si en el Paso 4 fue "Accidente sin tercero" (accidente_solo = true) → NO descalificar, avanza al Paso 6 (el SOAT propio aplica).
+  - Si hubo un tercero responsable y no tiene la placa → DESCALIFICAR. Sin identificación del tercero no es posible iniciar la reclamación.
+
+Mensaje de descalificación:
+Agradece al usuario. Explica que sin la placa u otro dato del tercero responsable no es posible iniciar la reclamación legal. Recomienda intentar recuperar el dato con el croquis o la denuncia si fue levantada. Cierra con calidez.
+- "casoNoViable" = true, "motivoNoViable" = "sin_placa"
+
+---
+
+### PASO 6 — Informe oficial de tránsito (Croquis o IPAD)
+Pregunta: "¿Cuentas con el informe de tránsito del accidente, como el croquis o el IPAD?"
+Opciones sugeridas: Sí, lo tengo / No lo tengo
+
+Regla:
+- "Sí, lo tengo" → avanza al Paso 7.
+- "No lo tengo" → DESCALIFICAR. El croquis o IPAD es el documento base obligatorio para cualquier reclamación. Sin él no es posible avanzar.
+
+Mensaje de descalificación:
+Agradece al usuario. Explica que el informe oficial de tránsito es el documento base para cualquier reclamación y que sin él no es posible avanzar en el proceso. Recomienda solicitarlo ante la Secretaría de Tránsito del municipio donde ocurrió el accidente. Cierra con calidez.
+- "casoNoViable" = true, "motivoNoViable" = "sin_croquis"
+
+---
+
+### PASO 7 — Representación legal activa
+Pregunta: "¿Ya cuentas con un abogado que esté llevando este caso?"
+Opciones sugeridas: No, no tengo / Sí, ya tengo
+
+Regla:
+- "No, no tengo" → CALIFICAR. Transicionar a documentación.
+- "Sí, ya tengo" → DESCALIFICAR. No es ético intervenir en un caso con representación activa.
+
+Mensaje de descalificación:
+Agradece su tiempo. Indica que no sería correcto intervenir en un caso que ya tiene representación activa. Deséale éxito con su proceso.
+- "casoNoViable" = true, "motivoNoViable" = "ya_tiene_abogado"
+
+---
+
+## PRINCIPIO DE ESCUCHA ACTIVA
+
+Antes de cada turno, analiza TODO el historial.
+Si el usuario ya respondió un paso de forma espontánea o indirecta, márcalo como completado y NO vuelvas a preguntarlo.
+Nunca hagas más de una pregunta por turno.
+Si una respuesta es ambigua, pide una aclaración breve antes de avanzar.
 
 ---
 
 ## MANEJO DE OBJECIONES
 
-- Ocupado o debe irse: "Con gusto. ¿En qué horario prefieres que te escriba para continuar con la evaluación?"
-- Duda del proceso: La evaluación es gratuita y sin compromiso. Solo se cobra si el caso resulta exitoso.
-- Pregunta por montos: Usa el anclaje de valor SOLO cuando el usuario lo pregunte explícitamente.
+- Ocupado o debe irse: "Con gusto. ¿En qué horario prefieres que te escriba para continuar?"
+- Duda del proceso: La evaluación es gratuita y sin compromiso. Solo se cobra si el caso es exitoso.
+- Pregunta por montos: responde solo si el usuario lo pregunta explícitamente.
 
 ---
 
-## ANCLAJE DE VALOR
-Úsalo ÚNICAMENTE si el usuario pregunta por montos o muestra dudas sobre el valor del proceso:
-"Usuarios con casos similares han recibido compensaciones entre 50 y 200 millones de pesos, dependiendo de las circunstancias particulares. El monto exacto lo determina el abogado tras revisar el expediente completo, y el servicio funciona bajo el modelo: si no ganamos, no cobramos."
+## ANCLAJE DE VALOR (solo si el usuario pregunta por montos)
+"Casos similares han recibido entre 10 y 200 millones de pesos según la gravedad de las lesiones. El monto exacto lo determina el abogado al revisar el expediente. El servicio funciona bajo el modelo: si no ganamos, no cobramos."
 
 ---
 
 ## CRITERIO DE TRANSICIÓN (cambiarEstado: "documentacion")
-Cambia de estado ÚNICAMENTE cuando los 7 filtros estén confirmados y ninguno haya resultado en exclusión.
-El mensaje de cierre debe seguir esta estructura exacta:
-1. Valida el caso: "Con base en lo que me comentas, tu situación tiene elementos concretos que nuestros abogados pueden trabajar."
-2. Genera urgencia suave: "Para no perder tiempo valioso, el siguiente paso es reunir la evidencia inicial."
-3. Anticipa lo que sigue: "En un momento te indico exactamente qué documentos necesitas enviarnos."
+Cambia de estado ÚNICAMENTE cuando los 7 pasos estén completados sin descalificación.
+Estructura exacta del mensaje de cierre:
+1. "Con base en lo que me comentas, tu situación tiene elementos concretos que nuestros abogados pueden trabajar."
+2. "Para no perder tiempo valioso, el siguiente paso es reunir la evidencia inicial."
+3. "En un momento te indico exactamente qué documentos necesitas enviarnos."
 
 ---
 
 ## RESTRICCIONES ABSOLUTAS
-- Preséntate como Sofía siempre que sea el primer mensaje de la conversación.
 - Sin emojis ni pictogramas.
-- Sin promesas de montos exactos. Solo rangos referenciales cuando el usuario los pida.
+- Sin promesas de montos exactos.
 - Sin mencionar a la competencia.
-- Sin inventar detalles del accidente que el usuario no haya proporcionado.
-- Nunca dar falsas esperanzas a un caso excluido.
+- Sin inventar detalles que el usuario no haya dado.
+- Nunca dar falsas esperanzas a un caso descalificado.
 - No preguntar si el accidente ocurrió en Colombia.
+- Mensajes de descalificación: máximo 3 oraciones, cálidos y definitivos.
 
 ---
 
@@ -167,13 +195,13 @@ El mensaje de cierre debe seguir esta estructura exacta:
   "respuesta": "Texto del mensaje para el usuario.",
   "cambiarEstado": "documentacion" | null,
   "casoNoViable": true | false,
-  "motivoNoViable": "tiempo" | "culpa_exclusiva" | "solo_danos_materiales" | "ya_tiene_abogado" | null,
+  "motivoNoViable": "tiempo" | "sin_placa" | "sin_croquis" | "ya_tiene_abogado" | null,
   "filtrosCompletados": {
     "lesion": true | false,
     "tiempo": true | false,
-    "culpa": true | false,
+    "rol": "conductor" | "pasajero" | "peatón" | null,
+    "culpa": "tercero" | "propia" | "accidente_solo" | null,
     "placa": true | false,
-    "perdidaTotal": true | false,
     "croquis": true | false,
     "sinAbogado": true | false
   }
@@ -182,19 +210,22 @@ El mensaje de cierre debe seguir esta estructura exacta:
 Reglas del JSON:
 - "filtrosCompletados" y "motivoNoViable" son solo para auditoría interna. No los menciones al usuario.
 - Cuando "casoNoViable" sea true, "cambiarEstado" debe ser siempre null.
-- Cuando "cambiarEstado" sea "documentacion", los filtros de exclusión (lesion, tiempo, culpa, sinAbogado) deben estar en true. Los informativos (placa, perdidaTotal, croquis) deben reflejar lo que el usuario respondió.
+- Cuando "cambiarEstado" sea "documentacion", los campos lesion, tiempo, placa, croquis y sinAbogado deben estar en true. Los campos rol y culpa deben reflejar lo que el usuario respondió.
         `;
 
         const messages = [
             { role: "system", content: systemPrompt },
-            ...historialChat.map(msg => ({
+            // CAMBIO #3 aplicado aquí: slice(-20) limita el historial a los
+            // últimos 20 mensajes. Evita enviar conversaciones enormes a OpenAI,
+            // reduce el costo por tokens y mantiene el foco del modelo.
+            ...historialChat.slice(-20).map(msg => ({
                 role: msg.sender === 'user' ? 'user' : 'assistant',
                 content: msg.message
             }))
         ];
 
         const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: "gpt-4o", // CAMBIO #2: gpt-4o-mini → gpt-4o para mejor razonamiento
             messages,
             response_format: { type: "json_object" },
             temperature: 0.4
@@ -239,13 +270,17 @@ Reglas del JSON:
 }
 
 // ── Agente Fase 2: Documentación (Q&A + detección de handoff) ─────────────────
-export async function procesarDocumentacionConIA(historialChat, documentosIndexados = []) {
+// CAMBIO #2: modelo cambiado de gpt-4o-mini a gpt-4o.
+// CAMBIO #3: historial limitado a los últimos 20 mensajes.
+// CAMBIO #4: se agrega parámetro contextoCaso para pasar el resumen de fase 1.
+//            Sofía en fase 2 ahora sabe qué respondió el usuario en fase 1
+//            (lesiones, tiempo, culpa, etc.) sin tener que preguntarlo de nuevo.
+export async function procesarDocumentacionConIA(historialChat, documentosIndexados = [], contextoCaso = {}) {
     try {
         const resumenDocs = documentosIndexados.length > 0
             ? documentosIndexados.map(d => `- ${d.file_name} (${d.document_type ?? 'sin clasificar'})`).join('\n')
             : 'Ninguno registrado aún en la base de datos.';
 
-        // Detectar cuáles de los 2 documentos clave ya están indexados
         const tieneCroquis = documentosIndexados.some(d =>
             d.document_type === 'croquis' ||
             d.file_name?.toLowerCase().includes('croquis') ||
@@ -260,6 +295,19 @@ export async function procesarDocumentacionConIA(historialChat, documentosIndexa
         );
 
         const expedienteCompleto = tieneCroquis && tieneHistoria;
+
+        // CAMBIO #4 aplicado aquí: construimos el resumen del caso desde fase 1.
+        // Si no se pasa contextoCaso, usa valores por defecto para no romper nada.
+        const resumenCaso = `
+## CONTEXTO DEL CASO (resumen de la fase de filtrado)
+- Lesión física confirmada: ${contextoCaso.lesion ? 'Sí' : 'No registrado'}
+- Accidente dentro de los 18 meses: ${contextoCaso.tiempo ? 'Sí' : 'No registrado'}
+- Tercero responsable: ${contextoCaso.culpa ? 'Sí' : 'No registrado'}
+- Tiene placa o datos del tercero: ${contextoCaso.placa ? 'Sí' : 'No registrado'}
+- Vehículo en pérdida total: ${contextoCaso.perdidaTotal ? 'Sí' : 'No registrado'}
+- Se realizó croquis oficial: ${contextoCaso.croquis ? 'Sí' : 'No registrado'}
+- Sin abogado activo: ${contextoCaso.sinAbogado ? 'Sí' : 'No registrado'}
+        `.trim();
 
         const systemPrompt = `
 ## IDENTIDAD
@@ -291,6 +339,10 @@ Solo se solicitan dos documentos:
 2. Epicrisis o historia clínica preliminar de las lesiones.
 
 No menciones la cédula bajo ninguna circunstancia.
+
+---
+
+${resumenCaso}
 
 ---
 
@@ -369,14 +421,15 @@ Ejemplos que activan el handoff:
 
         const messages = [
             { role: "system", content: systemPrompt },
-            ...historialChat.map(msg => ({
+            // CAMBIO #3 aplicado aquí también: slice(-20)
+            ...historialChat.slice(-20).map(msg => ({
                 role: msg.sender === 'user' ? 'user' : 'assistant',
                 content: msg.message
             }))
         ];
 
         const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: "gpt-4o", // CAMBIO #2: gpt-4o-mini → gpt-4o
             messages,
             response_format: { type: "json_object" },
             temperature: 0.3
@@ -398,15 +451,7 @@ Ejemplos que activan el handoff:
     }
 }
 
-// ── Análisis Multimodal: Procesa imágenes y PDFs con OpenAI ─────────────────
-/**
- * Analiza documentos (imágenes o PDFs) usando Vision API de OpenAI
- * Retorna JSON estructurado con clasificación, entidades y viabilidad
- * 
- * @param {string} filePath - Ruta local del archivo (imagen o PDF)
- * @param {string} mimeType - Tipo MIME del archivo ('image/jpeg', 'image/png', 'application/pdf')
- * @returns {Promise<Object>} JSON con campos: tipo_documento, entidades_clave, resumen_ejecutivo, caso_viable
- */
+// ── Análisis Multimodal: Procesa imágenes y PDFs con OpenAI ──────────────────
 export async function analizarDocumentoMultimodal(filePath, mimeType) {
     try {
         console.log(`📋 Iniciando análisis multimodal para: ${filePath} (${mimeType})`);
@@ -414,14 +459,11 @@ export async function analizarDocumentoMultimodal(filePath, mimeType) {
         let contenidoBase64 = '';
         let contenidoTexto = '';
 
-        // ── RAMA 1: Procesar imagen (JPEG/PNG) ────────────────────────────────
         if (mimeType === 'image/jpeg' || mimeType === 'image/png') {
             console.log(`🖼️  Detectado archivo de imagen. Convirtiendo a Base64...`);
             const buffer = fs.readFileSync(filePath);
             contenidoBase64 = buffer.toString('base64');
         }
-        
-        // ── RAMA 2: Procesar PDF ──────────────────────────────────────────────
         else if (mimeType === 'application/pdf') {
             console.log(`📄 Detectado PDF. Extrayendo texto...`);
             try {
@@ -431,19 +473,17 @@ export async function analizarDocumentoMultimodal(filePath, mimeType) {
                 contenidoTexto = dataPdf.text;
                 
                 if (!contenidoTexto || contenidoTexto.trim().length === 0) {
-                    console.warn('⚠️  PDF escaneado sin texto legible detectado. Usando OCR fallaría.');
+                    console.warn('⚠️  PDF escaneado sin texto legible detectado.');
                 }
             } catch (pdfError) {
                 console.error('❌ Error extrayendo PDF:', pdfError);
                 throw new Error('No se pudo procesar el archivo PDF. Intenta con una imagen clara.');
             }
         }
-        
         else {
             throw new Error(`Formato no soportado: ${mimeType}. Use JPEG, PNG o PDF.`);
         }
 
-        // ── ARMAR PAYLOAD PARA OpenAI ─────────────────────────────────────────
         const systemPrompt = `
 Eres un especialista forense en análisis de documentos de accidentes de tránsito para casos de indemnización en Colombia.
 
@@ -479,7 +519,6 @@ Reglas de viabilidad:
         const userContent = [];
 
         if (contenidoBase64) {
-            // Enviar imagen en Base64
             userContent.push({
                 type: "image_url",
                 image_url: {
@@ -492,7 +531,6 @@ Reglas de viabilidad:
                 text: "Analiza este documento y extrae la información en el formato JSON especificado."
             });
         } else if (contenidoTexto) {
-            // Enviar texto extraído de PDF
             userContent.push({
                 type: "text",
                 text: `Aquí está el contenido extraído de un PDF. Analízalo y responde en JSON:\n\n${contenidoTexto}\n\nRespuesta en JSON:`
