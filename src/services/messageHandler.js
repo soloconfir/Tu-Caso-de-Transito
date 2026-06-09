@@ -65,7 +65,7 @@ async function procesarRespuestaConBotones(sock, remoteJid, respuestaIA) {
             try {
                 // Intentar parsear como JSON
                 const jsonParsado = JSON.parse(respuestaIA);
-                respuesta_usuario = jsonParsado.respuesta_usuario || '';
+                respuesta_usuario = jsonParsado.respuesta || '';
                 botones = Array.isArray(jsonParsado.botones) ? jsonParsado.botones : [];
                 console.log(`✅ Respuesta de IA parseada como JSON. Botones: ${botones.length}`);
             } catch (parseError) {
@@ -76,7 +76,7 @@ async function procesarRespuestaConBotones(sock, remoteJid, respuestaIA) {
             }
         } else if (typeof respuestaIA === 'object' && respuestaIA !== null) {
             // Ya es un objeto parseado
-            respuesta_usuario = respuestaIA.respuesta_usuario || '';
+            respuesta_usuario = respuestaIA.respuesta || '';
             botones = Array.isArray(respuestaIA.botones) ? respuestaIA.botones : [];
         }
 
@@ -277,7 +277,7 @@ export async function manejarMensajeEntrante(sock, msg) {
             // Adicionalmente, este registro permite medir en el embudo cuántos
             // leads llegan fuera del rango temporal, dato clave para optimizar
             // la fuente de captación.
-            if (resultadoIA.casoExcluidoPorTiempo) {
+            if (resultadoIA.casoNoViable && resultadoIA.motivoNoViable === 'tiempo') {
                 await pool.query(
                     'UPDATE leads SET status = "excluido_tiempo", updated_at = NOW() WHERE id = ?',
                     [leadId]
